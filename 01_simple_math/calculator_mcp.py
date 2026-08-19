@@ -3,9 +3,9 @@ from fastmcp import FastMCP
 mcp = FastMCP("Calculations 🧮")
 
 
-# =========================
+# ============================================================
 # TOOLS
-# =========================
+# ============================================================
 
 @mcp.tool
 def add(a: float, b: float) -> float:
@@ -39,13 +39,13 @@ def percentage(value: float, percent: float) -> float:
     return value * percent / 100
 
 
-# =========================
+# ============================================================
 # RESOURCES
-# =========================
+# ============================================================
 
 @mcp.resource("calculator://about")
 def calculator_about() -> str:
-    """Information about this calculator MCP server."""
+    """Return information about this calculator MCP server."""
     return """
 Calculations 🧮
 
@@ -62,7 +62,7 @@ Available operations:
 
 @mcp.resource("calculator://operations")
 def calculator_operations() -> str:
-    """List all available mathematical operations."""
+    """Return all available mathematical operations."""
     return """
 Available operations:
 
@@ -76,12 +76,15 @@ percentage(value, percent)
 
 @mcp.resource("calculator://examples")
 def calculator_examples() -> str:
-    """Examples showing how to use the calculator."""
+    """Return examples showing how to use the calculator."""
     return """
 Examples:
 
 add(10, 20)
 => 30
+
+subtract(20, 10)
+=> 10
 
 multiply(5, 4)
 => 20
@@ -94,9 +97,40 @@ percentage(500, 10)
 """
 
 
-# =========================
+# ============================================================
+# DYNAMIC RESOURCE / RESOURCE TEMPLATE
+# ============================================================
+
+@mcp.resource("calculator://operation/{operation}")
+def operation_info(operation: str) -> str:
+    """Return information about a specific calculator operation."""
+
+    operations = {
+        "add": "add(a, b): Adds two numbers.",
+        "subtract": "subtract(a, b): Subtracts b from a.",
+        "multiply": "multiply(a, b): Multiplies two numbers.",
+        "divide": "divide(a, b): Divides a by b. b cannot be zero.",
+        "percentage": (
+            "percentage(value, percent): "
+            "Calculates a percentage of a value."
+        ),
+    }
+
+    operation = operation.lower()
+
+    if operation not in operations:
+        available = ", ".join(operations.keys())
+        return (
+            f"Unknown operation: {operation}\n"
+            f"Available operations: {available}"
+        )
+
+    return operations[operation]
+
+
+# ============================================================
 # PROMPTS
-# =========================
+# ============================================================
 
 @mcp.prompt
 def solve_math_problem(problem: str) -> str:
@@ -154,9 +188,9 @@ If it is incorrect, provide the correct answer and explain why.
 """
 
 
-# =========================
+# ============================================================
 # SERVER
-# =========================
+# ============================================================
 
 if __name__ == "__main__":
     mcp.run()
