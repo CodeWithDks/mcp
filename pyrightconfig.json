@@ -1,0 +1,7 @@
+{
+  "extraPaths": [
+    "01_simple_math",
+    "02_expense_tracker",
+    "03_devops_mcp"
+  ]
+}
