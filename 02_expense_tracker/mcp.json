@@ -2,14 +2,12 @@
   "mcpServers": {
     "expense-tracker": {
       "type": "stdio",
-      "command": "D:\\Tools\\UV\\bin\\uv.exe",
+      "command": "uv",
       "args": [
         "run",
-        "expense_tracker_mcp_server.py",
-        "--no-banner",
-        "--reload"
+        "expense_tracker_mcp_server.py"
       ],
-      "cwd": "D:\\mcp-tutorial\\02_expense_tracker"
+      "cwd": "/absolute/path/to/02_expense_tracker"
     }
   }
 }
