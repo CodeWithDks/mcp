@@ -167,5 +167,5 @@ MIT — see [LICENSE](./LICENSE).
 
 ## Author
 
-Built by Radhe as a portfolio project while learning Generative AI /
+Built by Deepak Singh as a portfolio project while learning Generative AI /
 agentic tooling development (LangChain, LangGraph, and the MCP ecosystem).
