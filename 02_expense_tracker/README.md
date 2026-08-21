@@ -91,35 +91,50 @@ psql -d expense_tracker -f schema.sql
 
 ### 2. Environment
 
+Copy the example file and fill in your own database connection string:
+
 ```bash
 cp .env.example .env
-# then edit .env with your real DATABASE_URL
 ```
+
+`.env` should contain:
+
+```
+DATABASE_URL=postgresql://username:password@localhost:5432/expense_tracker
+```
+
+`.env` is git-ignored — never commit real credentials.
 
 ### 3. Install & run
 
 ```bash
 pip install -r requirements.txt
-python expense_tracker.py
+python expense_tracker_mcp_server.py
 ```
 
-### 4. Connect it to Claude Desktop
+### 4. Connect it to an MCP client
 
-Add to your `claude_desktop_config.json`:
+**Claude Desktop** — add to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "expense-tracker": {
       "command": "python",
-      "args": ["/absolute/path/to/expense_tracker.py"]
+      "args": ["/absolute/path/to/02_expense_tracker/expense_tracker_mcp_server.py"]
     }
   }
 }
 ```
 
-Restart Claude Desktop and the tools will be available in a new
+Replace the path with the absolute path to this file on your own machine,
+then restart Claude Desktop. The tools will be available in a new
 conversation.
+
+**uv-based setup** — if you run the server via `uv` instead of a bare
+`python` call, see [`mcp.json`](./mcp.json) for an example configuration
+you can adapt to your own environment (update the `uv` binary path and
+working directory to match your machine).
 
 ## Tech stack
 
@@ -163,9 +178,10 @@ idempotency).
 
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](../LICENSE).
 
 ## Author
 
-Built by Deepak Singh as a portfolio project while learning Generative AI /
-agentic tooling development (LangChain, LangGraph, and the MCP ecosystem).
+Built by [Deepak Kumar Singh](https://github.com/CodeWithDks) as part of a
+hands-on Generative AI / agentic tooling learning path (LangChain,
+LangGraph, and the MCP ecosystem).
