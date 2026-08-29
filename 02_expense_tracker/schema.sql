@@ -2,14 +2,16 @@
 -- Run this once against a fresh PostgreSQL database before starting the server.
 
 CREATE TABLE IF NOT EXISTS expenses (
-    id              BIGSERIAL PRIMARY KEY,
-    amount          NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
-    category        VARCHAR(50) NOT NULL,
-    description     TEXT NOT NULL DEFAULT '',
-    expense_date    DATE NOT NULL DEFAULT CURRENT_DATE,
-    payment_method  VARCHAR(50) NOT NULL DEFAULT '',
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                   BIGSERIAL PRIMARY KEY,
+    amount               NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+    category             VARCHAR(50) NOT NULL,
+    description          TEXT NOT NULL DEFAULT '',
+    expense_date         DATE NOT NULL DEFAULT CURRENT_DATE,
+    payment_method       VARCHAR(50) NOT NULL DEFAULT '',
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    currency             VARCHAR(3) NOT NULL DEFAULT 'INR',
+    source_recurring_id  BIGINT
 );
 
 -- Speeds up the default ordering used by list_expenses / search_expenses.
@@ -17,3 +19,33 @@ CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (expense_date DESC, id 
 
 -- Speeds up get_category_summary and category-filtered searches.
 CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses (category);
+
+
+-- ============================================================
+-- Budgets — one monthly limit per category, in base currency (INR).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS budgets (
+    category        VARCHAR(50) PRIMARY KEY,
+    monthly_limit   NUMERIC(12, 2) NOT NULL CHECK (monthly_limit > 0),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+
+-- ============================================================
+-- Recurring expense templates — materialized into `expenses` rows
+-- on demand by generate_recurring_expenses().
+-- ============================================================
+CREATE TABLE IF NOT EXISTS recurring_expenses (
+    id              BIGSERIAL PRIMARY KEY,
+    amount          NUMERIC(12, 2) NOT NULL CHECK (amount > 0),
+    category        VARCHAR(50) NOT NULL,
+    description     TEXT NOT NULL DEFAULT '',
+    payment_method  VARCHAR(50) NOT NULL DEFAULT '',
+    day_of_month    SMALLINT NOT NULL CHECK (day_of_month BETWEEN 1 AND 28),
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE expenses
+    ADD CONSTRAINT fk_expenses_recurring
+    FOREIGN KEY (source_recurring_id) REFERENCES recurring_expenses(id);
