@@ -8,6 +8,7 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "dateparser>=1.4.2",
     "fastmcp>=3.4.7",
     "httpx>=0.28.1",
     "mcp[cli]>=1.29.0",
@@ -23,5 +24,5 @@ package = false
 extraPaths = [
     "01_simple_math",
     "02_expense_tracker",
-    "03_devops_mcp"
+    "03_github_mcp"
 ]

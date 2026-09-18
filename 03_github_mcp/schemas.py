@@ -160,3 +160,105 @@ class AddIssueCommentInput(RepoRef):
 class RequestReviewersInput(RepoRef):
     pr_number: int = Field(..., description="Pull request number.", ge=1)
     reviewers: List[str] = Field(..., description="GitHub usernames to request review from.", min_length=1, max_length=15)
+
+
+# ============================================================
+# WRITE — files & commits (used by create_tools.py / update_tools.py)
+# ============================================================
+
+class CreateFileInput(RepoRef):
+    path: str = Field(..., description="File path to create, e.g. 'src/new_module.py'.", min_length=1)
+    content: str = Field(..., description="Full text content of the new file.")
+    message: str = Field(..., description="Commit message for this change.", min_length=1)
+    branch: Optional[str] = Field(None, description="Branch to commit to. Defaults to the repo's default branch.")
+
+
+class UpdateFileInput(RepoRef):
+    path: str = Field(..., description="Path of the existing file to update.", min_length=1)
+    content: str = Field(..., description="New full text content to replace the file with.")
+    message: str = Field(..., description="Commit message for this change.", min_length=1)
+    branch: Optional[str] = Field(None, description="Branch to commit to. Defaults to the repo's default branch.")
+    sha: Optional[str] = Field(
+        None,
+        description="Current blob sha of the file being replaced. If omitted, it will be looked up "
+        "automatically via get_file_content — but supplying it avoids a race if the file "
+        "may have changed since you last read it.",
+    )
+
+
+class DeleteFileInput(RepoRef):
+    path: str = Field(..., description="Path of the file to delete.", min_length=1)
+    message: str = Field(..., description="Commit message for this deletion.", min_length=1)
+    sha: str = Field(..., description="Current blob sha of the file being deleted (from get_file_content).", min_length=1)
+    branch: Optional[str] = Field(None, description="Branch to commit to. Defaults to the repo's default branch.")
+
+
+class FileChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(..., description="File path, e.g. 'src/app.py'.", min_length=1)
+    content: str = Field(..., description="Full text content for this file.")
+
+
+class PushFilesInput(RepoRef):
+    branch: str = Field(..., description="Branch to push the commit to, e.g. 'main' or a feature branch.", min_length=1)
+    message: str = Field(..., description="Commit message for the push.", min_length=1)
+    files: List[FileChange] = Field(
+        ...,
+        description="One or more files to include in this single commit. Each is created or "
+        "overwritten at the given path.",
+        min_length=1,
+        max_length=50,
+    )
+
+
+# ============================================================
+# WRITE — comments (used by create_tools.py / update_tools.py)
+# ============================================================
+
+class CreateReviewCommentInput(RepoRef):
+    pr_number: int = Field(..., description="Pull request number.", ge=1)
+    body: str = Field(..., description="Comment text in Markdown.", min_length=1)
+    commit_sha: str = Field(..., description="SHA of the commit being commented on — typically the PR's current head sha.", min_length=1)
+    path: str = Field(..., description="File path within the diff being commented on.", min_length=1)
+    line: int = Field(..., description="Line number in the file (in the new version) to attach the comment to.", ge=1)
+    side: str = Field("RIGHT", description="Which side of the diff: 'RIGHT' (new/added lines) or 'LEFT' (old/removed lines).")
+
+
+class CreateCommitCommentInput(RepoRef):
+    commit_sha: str = Field(..., description="SHA of the commit to comment on.", min_length=1)
+    body: str = Field(..., description="Comment text in Markdown.", min_length=1)
+    path: Optional[str] = Field(None, description="Optional file path to attach the comment to a specific file in the commit.")
+    line: Optional[int] = Field(None, description="Optional line number within that file.", ge=1)
+
+
+class UpdateIssueCommentInput(RepoRef):
+    comment_id: int = Field(..., description="ID of the existing comment (returned by add_issue_comment).", ge=1)
+    body: str = Field(..., description="New comment text in Markdown, replacing the old text.", min_length=1)
+
+
+# ============================================================
+# READ — repository structure (used by read_tools.py)
+# ============================================================
+
+class GetRepositoryTreeInput(RepoRef):
+    ref: Optional[str] = Field(None, description="Branch, tag, or commit SHA. Defaults to the repo's default branch.")
+    path_prefix: Optional[str] = Field(None, description="Only return entries whose path starts with this prefix, e.g. 'src/'.")
+    limit: int = Field(100, description="Max entries to return.", ge=1, le=500)
+    offset: int = Field(0, description="Entries to skip (for pagination).", ge=0)
+
+
+# ============================================================
+# WRITE — branches & pull requests (used by create_tools.py)
+# ============================================================
+
+class CreateBranchInput(RepoRef):
+    new_branch: str = Field(..., description="Name for the new branch, e.g. 'refactor/organize-src'.", min_length=1)
+    base_branch: Optional[str] = Field(None, description="Branch to branch from. Defaults to the repo's default branch.")
+
+
+class CreatePullRequestInput(RepoRef):
+    title: str = Field(..., description="Pull request title.", min_length=1, max_length=256)
+    head: str = Field(..., description="Branch containing your changes, e.g. 'refactor/organize-src'.", min_length=1)
+    base: str = Field(..., description="Branch you want to merge into, e.g. 'main'.", min_length=1)
+    body: Optional[str] = Field(None, description="Pull request description in Markdown.")
+    draft: bool = Field(False, description="Open as a draft pull request.")

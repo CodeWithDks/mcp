@@ -15,6 +15,7 @@ from schemas import (
     GetPullRequestDiffInput,
     GetPullRequestFilesInput,
     GetPullRequestsInput,
+    GetRepositoryTreeInput,
     GetWorkflowRunLogsInput,
     GetWorkflowRunLogsSummaryInput,
     GetWorkflowRunsInput,
@@ -223,6 +224,45 @@ def get_branch_protection(params: GetBranchProtectionInput) -> dict:
         "allow_force_pushes": (data.get("allow_force_pushes") or {}).get("enabled", False),
         "allow_deletions": (data.get("allow_deletions") or {}).get("enabled", False),
     }
+
+
+@mcp.tool(
+    name="get_repository_tree",
+    annotations={**_READ_ONLY_ANNOTATIONS, "title": "Get Full Repository File Tree"},
+)
+def get_repository_tree(params: GetRepositoryTreeInput) -> dict:
+    """List every file and directory in a repository, recursively, at a given
+    ref. Use this FIRST when you need to understand or reorganize a repo's
+    code — it shows the whole structure so you know which files exist before
+    reading any of them individually with get_file_content.
+
+    Args:
+        params (GetRepositoryTreeInput): owner, repo, ref, path_prefix, limit, offset.
+
+    Returns:
+        dict: paginated envelope with 'items' (path, type: 'file'|'directory', size),
+              plus 'github_truncated' (true if GitHub itself capped an extremely
+              large tree — in that case, narrow with path_prefix and call again).
+    """
+    try:
+        result = github.get_repository_tree(params.owner, params.repo, ref=params.ref)
+    except Exception as e:
+        return {"error": handle_api_error(e, "get_repository_tree")}
+
+    entries = [
+        {
+            "path": e["path"],
+            "type": "directory" if e["type"] == "tree" else "file",
+            "size": e.get("size"),
+        }
+        for e in result.get("tree", [])
+        if not params.path_prefix or e["path"].startswith(params.path_prefix)
+    ]
+
+    page = entries[params.offset : params.offset + params.limit]
+    response = paginated_response(page, params.limit, params.offset, total=len(entries))
+    response["github_truncated"] = result.get("truncated", False)
+    return response
 
 
 @mcp.tool(

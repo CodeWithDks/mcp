@@ -4,7 +4,6 @@ users repeat often. Prompts don't call the GitHub API themselves; they return
 instructions guiding the agent through the right tool sequence.
 """
 
-# pyrefly: ignore [missing-import]
 from mcp_instance import mcp
 
 
@@ -83,4 +82,52 @@ def debug_failed_workflow(owner: str, repo: str, run_id: int) -> str:
         f"5. Summarize the likely root cause and suggest a fix. If the user confirms, "
         f"you can call trigger_workflow to re-run after a fix is pushed — do not "
         f"trigger it speculatively without confirmation."
+    )
+
+
+@mcp.prompt(name="organize_and_document_code")
+def organize_and_document_code(owner: str, repo: str, path_prefix: str = "") -> str:
+    """Guide reading an existing repo's code, reorganizing it into a cleaner
+    structure, and adding useful comments/docstrings — delivered as a PR,
+    never pushed directly to the base branch."""
+    scope_note = f" (scoped to paths starting with '{path_prefix}')" if path_prefix else ""
+    return (
+        f"Read, reorganize, and document the code in {owner}/{repo}{scope_note}. "
+        f"This is a structural change touching many files, so it must go through a "
+        f"branch and a pull request — never push straight to the base branch. Steps:\n"
+        f"\n"
+        f"1. DISCOVER: Call get_repository_tree to see the full file structure"
+        f"{' filtered by path_prefix' if path_prefix else ''}. Identify the language(s), "
+        f"existing folder conventions, and obvious problems (files in the wrong place, "
+        f"inconsistent naming, dead code, missing docs).\n"
+        f"2. READ: Use get_file_content to read the key files — entry points, config, "
+        f"README, and anything in scope. Don't try to read every file in a large repo "
+        f"at once; read what you need to understand the structure and dependencies "
+        f"between files before proposing changes.\n"
+        f"3. PLAN: Before changing anything, present the user with a concrete plan: "
+        f"which files move where, what naming/structure conventions you'll apply, and "
+        f"what kind of comments/docstrings you'll add (module-level purpose, function-level "
+        f"'why' not just 'what', not exhaustive line noise). Wait for approval before "
+        f"proceeding — this step is not optional for a multi-file change.\n"
+        f"4. PRESERVE BEHAVIOR: Reorganizing and commenting should not change what the code "
+        f"does. If you notice an actual bug or think a real behavior change is warranted, "
+        f"flag it separately and get explicit confirmation — don't fold it into the "
+        f"'organize' change.\n"
+        f"5. BRANCH: Call create_branch to make a branch off the default branch "
+        f"(e.g. 'refactor/organize-code'). Do this before making any file changes.\n"
+        f"6. APPLY CHANGES on that branch:\n"
+        f"   - For files that just need better comments/formatting at the same path, use "
+        f"update_file (or push_files if changing several together).\n"
+        f"   - For moving/renaming a file, there is no rename primitive — create the file "
+        f"at its new path with create_file, then remove the old one with delete_file, "
+        f"in the same push_files call or paired commits.\n"
+        f"   - Group related changes into logical commits (e.g. one commit per module) "
+        f"rather than one giant commit, using push_files for each group with a clear "
+        f"commit message.\n"
+        f"7. OPEN A PR: Call create_pull_request from your branch into the base branch, "
+        f"with a description summarizing what was reorganized and why. Do not merge it — "
+        f"leave that for the user to review.\n"
+        f"\n"
+        f"If get_repository_tree reports github_truncated=true, the repo is too large to "
+        f"see in one call — narrow scope with path_prefix and repeat this process per area."
     )
