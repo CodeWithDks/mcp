@@ -17,8 +17,8 @@ The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standa
 ```
 mcp/
 ├── 01_simple_math/          ✅ Calculator MCP server (FastMCP)
-├── 02_expense_tracker/      🚧 Planned
-├── 03_devops_mcp/           🚧 Planned
+├── 02_expense_tracker/      ✅ PostgreSQL-backed expense tracker (20 tools)
+├── 03_github_mcp/           ✅ GitHub MCP server (30 tools)
 ├── pyproject.toml
 ├── pyrightconfig.json
 ├── uv.lock
@@ -42,13 +42,30 @@ A calculator MCP server built with [FastMCP](https://gofastmcp.com/), demonstrat
 
 📄 [Read the module README](./01_simple_math/README.md)
 
-### 🚧 `02_expense_tracker` — Planned
-An MCP server for tracking and querying expenses, backed by a database.
+### ✅ `02_expense_tracker` — Expense Tracker MCP Server
+A PostgreSQL-backed personal finance assistant — full CRUD on expenses,
+search/filter, monthly and category analytics, budgets, recurring
+expenses, multi-currency support, natural-language dates, and statistical
+anomaly detection. 20 tools, 5 resources, 2 prompts, with a documented
+three-round QA pass (90+ manually-run scenarios).
 
-### 🚧 `03_devops_mcp` — Planned
-An MCP server exposing DevOps-related tools and automation.
+📄 [Read the module README](./02_expense_tracker/README.md) · [Testing notes](./02_expense_tracker/TESTING.md)
 
-> As each module is built, its status above will move from 🚧 Planned to ✅ Done, with its own README linked here.
+### ✅ `03_github_mcp` — GitHub MCP Server
+Read and write access to GitHub — repositories, files, commits, branches,
+pull requests, issues, code review comments, and GitHub Actions — through
+the GitHub REST and Git Data APIs. 30 tools split across dedicated
+read/update/create files so a bug in a read operation can never
+accidentally become a write, including real atomic multi-file commits
+(`push_files`, via the low-level Git Data API — the same primitives
+`git push` itself is built on) and a guided `organize_and_document_code`
+prompt that plans a repo reorganization, waits for explicit approval,
+then applies it on a branch and opens a PR rather than pushing directly.
+
+📄 [Read the module README](./03_github_mcp/README.md) · [Full feature log](./03_github_mcp/GITHUB_MCP_FEATURES.md)
+
+> As new modules are added, they'll appear here the same way — a short
+> summary and a link to that module's own README.
 
 ---
 
@@ -107,9 +124,9 @@ Some modules (e.g. anything using `psycopg`) will need credentials such as a dat
 ## 🎯 Roadmap
 
 - [x] Simple math / calculator MCP server
-- [ ] Expense tracker MCP server (database-backed)
-- [ ] DevOps MCP server
-- [ ] MCP server with external API integration (`httpx`-based)
+- [x] Expense tracker MCP server (database-backed)
+- [x] GitHub MCP server (DevOps automation)
+- [ ] MCP server with external API integration beyond GitHub (`httpx`-based)
 - [ ] MCP client examples showing how to connect to these servers
 
 ---
