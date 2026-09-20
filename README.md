@@ -153,4 +153,6 @@ Open source — feel free to explore, learn from, or build on any module here.
 
 Built by [Deepak Kumar Singh](https://github.com/CodeWithDks) as a hands-on learning project for the Model Context Protocol.
 
+Contact Email: deepakniu09@gmail.com
+
 If you find this useful, consider giving the repo a ⭐.
