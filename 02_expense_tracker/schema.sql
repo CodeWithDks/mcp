@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS expenses (
     created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
     currency             VARCHAR(3) NOT NULL DEFAULT 'INR',
-    source_recurring_id  BIGINT
+    source_recurring_id  BIGINT,
+    deleted_at           TIMESTAMPTZ
 );
+
+-- Speeds up filtering out soft-deleted rows on every read query.
+CREATE INDEX IF NOT EXISTS idx_expenses_not_deleted ON expenses (deleted_at) WHERE deleted_at IS NULL;
 
 -- Speeds up the default ordering used by list_expenses / search_expenses.
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses (expense_date DESC, id DESC);
