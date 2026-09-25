@@ -12,6 +12,7 @@ Known trade-off (not fixed here, flagged for you to decide):
 
 import csv
 import io
+import re
 from datetime import date
 from typing import Annotated, Optional
 
@@ -178,7 +179,12 @@ def _resolve_expense_date(value: Optional[str]) -> Optional[str]:
     except ValueError:
         pass
 
-    parsed = dateparser.parse(value, settings={"PREFER_DATES_FROM": "past"})
+    # dateparser has a known quirk: "last Tuesday" / "this Friday" return
+    # None even though the bare weekday name ("Tuesday") parses correctly
+    # to the most recent past occurrence. Strip that prefix before parsing.
+    cleaned = re.sub(r"^(last|this)\s+", "", value.strip(), flags=re.IGNORECASE)
+
+    parsed = dateparser.parse(cleaned, settings={"PREFER_DATES_FROM": "past"})
     if parsed is None:
         raise ToolError(
             f"Could not understand expense_date {value!r}. "
@@ -278,7 +284,7 @@ async def get_expense(expense_id: ExpenseId, ctx: Context) -> dict:
         with get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
-                    f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE id = %s;",
+                    f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE id = %s AND deleted_at IS NULL;",
                     (expense_id,),
                 )
                 row = cursor.fetchone()
@@ -308,6 +314,7 @@ async def list_expenses(ctx: Context, limit: Annotated[int, Field(ge=1, le=100)]
                 cursor.execute(
                     f"""
                     SELECT {EXPENSE_COLUMNS} FROM expenses
+                    WHERE deleted_at IS NULL
                     ORDER BY expense_date DESC, id DESC
                     LIMIT %s;
                     """,
@@ -341,7 +348,7 @@ async def search_expenses(
     _validate_date(start_date, "start_date")
     _validate_date(end_date, "end_date")
 
-    conditions = []
+    conditions = ["deleted_at IS NULL"]
     parameters: list = []
 
     if category:
@@ -357,9 +364,7 @@ async def search_expenses(
         conditions.append("expense_date <= %s")
         parameters.append(end_date)
 
-    query = f"SELECT {EXPENSE_COLUMNS} FROM expenses"
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query = f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE " + " AND ".join(conditions)
     query += " ORDER BY expense_date DESC, id DESC LIMIT %s;"
     parameters.append(limit)
 
@@ -465,7 +470,8 @@ class DeleteConfirmation(BaseModel):
 )
 async def delete_expense(expense_id: ExpenseId, ctx: Context, confirm: bool = False) -> dict:
     """
-    Delete an expense by ID. This is permanent.
+    Delete an expense by ID. This is a soft delete — the row is hidden from
+    all normal reads immediately, but recoverable via restore_expense.
 
     Set confirm=true to delete immediately. If confirm is omitted, this tries
     to ask for interactive confirmation; on a client that doesn't support that,
@@ -475,7 +481,10 @@ async def delete_expense(expense_id: ExpenseId, ctx: Context, confirm: bool = Fa
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE id = %s;", (expense_id,))
+                cursor.execute(
+                    f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE id = %s AND deleted_at IS NULL;",
+                    (expense_id,),
+                )
                 existing = cursor.fetchone()
     except Exception as exc:
         raise ToolError(f"Failed to look up expense {expense_id}: {exc}") from exc
@@ -490,7 +499,8 @@ async def delete_expense(expense_id: ExpenseId, ctx: Context, confirm: bool = Fa
             result = await ctx.elicit(
                 message=(
                     f"Delete expense #{expense_id} — {expense['amount']} in "
-                    f"{expense['category']} on {expense['expense_date']}? This cannot be undone."
+                    f"{expense['category']} on {expense['expense_date']}? "
+                    f"(This can be undone with restore_expense afterward.)"
                 ),
                 response_type=DeleteConfirmation,
             )
@@ -501,7 +511,7 @@ async def delete_expense(expense_id: ExpenseId, ctx: Context, confirm: bool = Fa
             return {
                 "success": False,
                 "message": (
-                    f"This client can't prompt for confirmation. To permanently delete "
+                    f"This client can't prompt for confirmation. To delete "
                     f"expense #{expense_id} ({expense['amount']} in {expense['category']}), "
                     f"call delete_expense again with confirm=true."
                 ),
@@ -513,14 +523,83 @@ async def delete_expense(expense_id: ExpenseId, ctx: Context, confirm: bool = Fa
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM expenses WHERE id = %s RETURNING id;", (expense_id,))
+                cursor.execute(
+                    "UPDATE expenses SET deleted_at = CURRENT_TIMESTAMP WHERE id = %s RETURNING id;",
+                    (expense_id,),
+                )
                 row = cursor.fetchone()
             conn.commit()
     except Exception as exc:
         raise ToolError(f"Failed to delete expense {expense_id}: {exc}") from exc
 
-    await ctx.info(f"Deleted expense {expense_id}.")
-    return {"success": True, "message": f"Expense {expense_id} deleted."}
+    await ctx.info(f"Soft-deleted expense {expense_id}.")
+    return {"success": True, "message": f"Expense {expense_id} deleted (recoverable via restore_expense)."}
+
+
+@mcp.tool(
+    annotations={
+        "title": "Restore Expense",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
+async def restore_expense(expense_id: ExpenseId, ctx: Context) -> dict:
+    """Undo a delete — bring a soft-deleted expense back."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE expenses
+                    SET deleted_at = NULL
+                    WHERE id = %s AND deleted_at IS NOT NULL
+                    RETURNING {EXPENSE_COLUMNS};
+                    """,
+                    (expense_id,),
+                )
+                row = cursor.fetchone()
+    except Exception as exc:
+        raise ToolError(f"Failed to restore expense {expense_id}: {exc}") from exc
+
+    if row is None:
+        return {
+            "success": False,
+            "message": f"Expense {expense_id} isn't in the deleted list (either it doesn't exist or was never deleted).",
+        }
+
+    await ctx.info(f"Restored expense {expense_id}.")
+    return {"success": True, "message": f"Expense {expense_id} restored.", "expense": expense_to_dict(row)}
+
+
+@mcp.tool(
+    annotations={
+        "title": "List Deleted Expenses",
+        "readOnlyHint": True,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+)
+async def list_deleted_expenses(ctx: Context, limit: Annotated[int, Field(ge=1, le=100)] = 20) -> list[dict]:
+    """List soft-deleted expenses that can still be restored."""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT {EXPENSE_COLUMNS} FROM expenses
+                    WHERE deleted_at IS NOT NULL
+                    ORDER BY deleted_at DESC
+                    LIMIT %s;
+                    """,
+                    (limit,),
+                )
+                rows = cursor.fetchall()
+    except Exception as exc:
+        raise ToolError(f"Failed to list deleted expenses: {exc}") from exc
+
+    return [expense_to_dict(row) for row in rows]
 
 
 @mcp.tool(
@@ -542,7 +621,8 @@ async def get_monthly_summary(year: int, month: Annotated[int, Field(ge=1, le=12
                     FROM expenses
                     WHERE EXTRACT(YEAR FROM expense_date) = %s
                       AND EXTRACT(MONTH FROM expense_date) = %s
-                      AND currency = %s;
+                      AND currency = %s
+                      AND deleted_at IS NULL;
                     """,
                     (year, month, currency.upper()),
                 )
@@ -575,7 +655,7 @@ async def get_category_summary(ctx: Context, currency: Currency = "INR") -> list
                     """
                     SELECT category, SUM(amount) AS total_spent, COUNT(*) AS expense_count
                     FROM expenses
-                    WHERE currency = %s
+                    WHERE currency = %s AND deleted_at IS NULL
                     GROUP BY category
                     ORDER BY total_spent DESC;
                     """,
@@ -602,15 +682,13 @@ async def get_top_expenses(
     category: Optional[Category] = None,
 ) -> list[dict]:
     """Return the largest N expenses by amount, optionally filtered by category."""
-    conditions = []
+    conditions = ["deleted_at IS NULL"]
     parameters: list = []
     if category:
         conditions.append("LOWER(category) = LOWER(%s)")
         parameters.append(category.strip())
 
-    query = f"SELECT {EXPENSE_COLUMNS} FROM expenses"
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query = f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE " + " AND ".join(conditions)
     query += " ORDER BY amount DESC LIMIT %s;"
     parameters.append(limit)
 
@@ -656,6 +734,7 @@ async def get_spending_trend(ctx: Context, months: Annotated[int, Field(ge=1, le
                     LEFT JOIN expenses e
                         ON DATE_TRUNC('month', e.expense_date) = gs.month_start
                         AND e.currency = %s
+                        AND e.deleted_at IS NULL
                     GROUP BY gs.month_start
                     ORDER BY gs.month_start ASC;
                     """,
@@ -692,7 +771,7 @@ async def export_expenses_csv(
     _validate_date(start_date, "start_date")
     _validate_date(end_date, "end_date")
 
-    conditions = []
+    conditions = ["deleted_at IS NULL"]
     parameters: list = []
     if start_date:
         conditions.append("expense_date >= %s")
@@ -701,15 +780,13 @@ async def export_expenses_csv(
         conditions.append("expense_date <= %s")
         parameters.append(end_date)
 
-    query = f"SELECT {EXPENSE_COLUMNS} FROM expenses"
-    if conditions:
-        query += " WHERE " + " AND ".join(conditions)
+    query = f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE " + " AND ".join(conditions)
     query += " ORDER BY expense_date ASC;"
 
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # pyrefly: ignore [bad-argument-type]
+                # pyrefly: ignore [arg-type, bad-argument-type]
                 cursor.execute(query, parameters)
                 rows = cursor.fetchall()
     except Exception as exc:
@@ -717,7 +794,6 @@ async def export_expenses_csv(
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    # pyrefly: ignore [bad-option-value]
     writer.writerow(["id", "amount", "currency", "category", "description", "expense_date", "payment_method"])
     for row in rows:
         writer.writerow([row[0], float(row[1]), row[8], row[2], row[3], row[4], row[5]])
@@ -830,6 +906,7 @@ async def check_budget_status(year: int, month: Annotated[int, Field(ge=1, le=12
                     LEFT JOIN expenses e
                         ON e.category = b.category
                         AND e.currency = 'INR'
+                        AND e.deleted_at IS NULL
                         AND EXTRACT(YEAR FROM e.expense_date) = %s
                         AND EXTRACT(MONTH FROM e.expense_date) = %s
                     GROUP BY b.category, b.monthly_limit
@@ -1059,7 +1136,7 @@ async def get_expense_anomalies(
                     WITH category_avg AS (
                         SELECT category, AVG(amount) AS avg_amount, COUNT(*) AS n
                         FROM expenses
-                        WHERE currency = %s
+                        WHERE currency = %s AND deleted_at IS NULL
                         GROUP BY category
                         HAVING COUNT(*) >= 2
                     )
@@ -1070,6 +1147,7 @@ async def get_expense_anomalies(
                     FROM expenses e
                     JOIN category_avg ca ON ca.category = e.category
                     WHERE e.currency = %s
+                      AND e.deleted_at IS NULL
                       AND e.amount > ca.avg_amount * %s
                     ORDER BY e.amount DESC;
                     """,
@@ -1099,7 +1177,7 @@ def recent_expenses_resource() -> list[dict]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                f"SELECT {EXPENSE_COLUMNS} FROM expenses ORDER BY expense_date DESC, id DESC LIMIT 20;"
+                f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE deleted_at IS NULL ORDER BY expense_date DESC, id DESC LIMIT 20;"
             )
             rows = cursor.fetchall()
     return [expense_to_dict(row) for row in rows]
@@ -1110,7 +1188,10 @@ def single_expense_resource(expense_id: int) -> dict:
     """Read-only resource for a single expense by ID."""
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE id = %s;", (expense_id,))
+            cursor.execute(
+                f"SELECT {EXPENSE_COLUMNS} FROM expenses WHERE id = %s AND deleted_at IS NULL;",
+                (expense_id,),
+            )
             row = cursor.fetchone()
     if row is None:
         return {"error": f"Expense {expense_id} not found."}
@@ -1129,7 +1210,8 @@ def monthly_summary_resource(year: int, month: int) -> dict:
                 SELECT COALESCE(SUM(amount), 0), COUNT(*)
                 FROM expenses
                 WHERE EXTRACT(YEAR FROM expense_date) = %s
-                  AND EXTRACT(MONTH FROM expense_date) = %s;
+                  AND EXTRACT(MONTH FROM expense_date) = %s
+                  AND deleted_at IS NULL;
                 """,
                 (year, month),
             )
@@ -1144,7 +1226,7 @@ def category_summary_resource() -> list[dict]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT category, SUM(amount), COUNT(*) FROM expenses GROUP BY category ORDER BY SUM(amount) DESC;"
+                "SELECT category, SUM(amount), COUNT(*) FROM expenses WHERE deleted_at IS NULL GROUP BY category ORDER BY SUM(amount) DESC;"
             )
             rows = cursor.fetchall()
     return [{"category": r[0], "total_spent": float(r[1]), "expense_count": r[2]} for r in rows]
@@ -1163,7 +1245,8 @@ def expense_stats_resource() -> dict:
                     COALESCE(AVG(amount), 0),
                     COALESCE(MIN(amount), 0),
                     COALESCE(MAX(amount), 0)
-                FROM expenses;
+                FROM expenses
+                WHERE deleted_at IS NULL;
                 """
             )
             # pyrefly: ignore [not-iterable]
