@@ -10,6 +10,8 @@ This repo is where I learn MCP by building it: one server at a time, each one a 
 
 The [Model Context Protocol](https://modelcontextprotocol.io/) is an open standard that lets AI applications (like Claude, Cursor, or any MCP-compatible client) connect to external tools, data, and systems in a consistent way — through **Tools** (actions the AI can perform), **Resources** (data the AI can read), and **Prompts** (reusable instructions).
 
+Click here for the notes: https://heather-aura-1c8.notion.site/MCP-Complete-Beginner-Notes-3d84003352778003b141fee8d602ebc9?pvs=74
+
 ---
 
 ## 📂 Repository Structure
@@ -150,5 +152,7 @@ Open source — feel free to explore, learn from, or build on any module here.
 ## 👨‍💻 Author
 
 Built by [Deepak Kumar Singh](https://github.com/CodeWithDks) as a hands-on learning project for the Model Context Protocol.
+
+Contact Email: deepakniu09@gmail.com
 
 If you find this useful, consider giving the repo a ⭐.
