@@ -20,6 +20,9 @@ for the full writeup.
 ## Features
 
 - **Full CRUD** on expenses — add, get, update, delete
+- **Soft deletes with undo** — a deleted expense is hidden from all
+  normal reads immediately, but recoverable via `restore_expense` — see
+  [Architecture Notes](#architecture-notes)
 - **Search & filter** by category, payment method, and date range
 - **Analytics** — monthly totals, category breakdown, top expenses,
   a zero-filled month-over-month spending trend, statistical anomaly
@@ -27,9 +30,10 @@ for the full writeup.
 - **Budgets** — set a monthly limit per category, check spend against it
 - **Recurring expenses** — templates for rent/subscriptions/etc., safely
   re-runnable materialization into real expense rows (no duplicates)
-- **Multi-currency** — per-expense currency, static-rate conversion, and
-  currency-scoped aggregation (every summary tool reports one currency at
-  a time rather than silently mixing units — see [Architecture Notes](#architecture-notes))
+- **Multi-currency** — per-expense currency, live exchange-rate lookup
+  with an automatic static-table fallback, and currency-scoped
+  aggregation (every summary tool reports one currency at a time rather
+  than silently mixing units — see [Architecture Notes](#architecture-notes))
 - **Natural-language dates** — `"yesterday"`, `"last Tuesday"`, `"3 days ago"`,
   as well as strict `YYYY-MM-DD`
 - **CSV export** for bulk data (cheaper on tokens than JSON for large
@@ -50,13 +54,15 @@ for the full writeup.
 | `list_expenses` | read | Most recent expenses, newest first |
 | `search_expenses` | read | Filter by category / payment method / date range |
 | `update_expense` | write | Partial update — only provided fields change |
-| `delete_expense` | write, destructive | Delete by ID, with confirmation |
+| `delete_expense` | write, destructive | Soft-delete by ID, with confirmation |
+| `restore_expense` | write | Undo a delete — bring a soft-deleted expense back |
+| `list_deleted_expenses` | read | List soft-deleted expenses that can still be restored |
 | `get_monthly_summary` | read | Total spent + count for a given month, one currency |
 | `get_category_summary` | read | Totals grouped by category, one currency, highest first |
 | `get_top_expenses` | read | Largest N expenses, optional category filter |
 | `get_spending_trend` | read | Month-over-month totals, one currency (zero-filled) |
 | `export_expenses_csv` | read | Bulk export as CSV text |
-| `convert_currency` | read | Convert an amount between currencies (static rates) |
+| `convert_currency` | read | Convert an amount between currencies — live rate, static-table fallback |
 | `set_budget` | write | Set/update a category's monthly budget (INR) |
 | `get_budgets` | read | List all configured budgets |
 | `check_budget_status` | read | Spend vs. budget per category for a month |
@@ -72,14 +78,34 @@ for the full writeup.
 flowchart LR
     A[Claude Desktop / Claude Code] -- MCP over stdio --> B[Expense Tracker MCP Server]
     B -- psycopg3 --> C[(PostgreSQL)]
+    B -- httpx (3s timeout) --> D[Live FX rate API]
     B -- ctx.elicit / ctx.info --> A
 ```
 
-The server exposes 20 tools, 5 resources, and 2 prompts on top of the
+The server exposes 22 tools, 5 resources, and 2 prompts on top of the
 `expenses`, `budgets`, and `recurring_expenses` tables (schema in
 [`schema.sql`](./schema.sql)).
 
 ## Architecture notes
+
+**Why deletes are soft, not hard.** `delete_expense` sets a `deleted_at`
+timestamp rather than removing the row — every normal read (`list_expenses`,
+`search_expenses`, all the aggregation tools) filters `WHERE deleted_at IS
+NULL`, so a deleted expense disappears from everyday use immediately, but
+nothing is actually destroyed. `restore_expense` clears the timestamp to
+undo it, and `list_deleted_expenses` shows what's currently recoverable.
+A partial index (`WHERE deleted_at IS NULL`) keeps the common case — reads
+that exclude deleted rows — fast, since Postgres only has to index the
+rows that matter for everyday queries.
+
+**Why currency conversion tries live rates first, not just the static
+table.** `convert_currency` attempts a live lookup via `httpx` (a 3-second
+timeout) before falling back to the static exchange-rate table. The fallback
+triggers on *any* failure — network error, timeout, unsupported pair, bad
+response — so a flaky or unreachable rate API degrades the tool to "less
+precise" rather than "broken." The static table remains the sole source of
+truth everywhere else (aggregation, budget checks) — see the currency
+partitioning note below.
 
 **Why `confirm=true` exists alongside elicitation.** MCP defines
 elicitation (the server asking the client to show a confirmation dialog) as
@@ -124,7 +150,7 @@ psql -d expense_tracker -f schema.sql
 Copy the example file and fill in your own database connection string:
 
 ```bash
-cp .env.example .env
+cp .env_example .env
 ```
 
 `.env` should contain:
@@ -178,6 +204,8 @@ same configuration as a standalone file.
 
 - **[FastMCP](https://gofastmcp.com)** — Python MCP server framework
 - **PostgreSQL** + **psycopg3** — data layer
+- **httpx** — async live exchange-rate lookups, with a strict timeout
+- **dateparser** — natural-language date parsing (`"yesterday"`, `"last Tuesday"`)
 - **Pydantic** — schema validation (`Annotated` + `Field` constraints on
   every tool parameter)
 - **Model Context Protocol** — tools, resources, prompts, elicitation
@@ -192,6 +220,11 @@ aggregation silently mixing units, and a missing CSV column — plus
 adversarial checks (SQL injection attempt, malformed dates, oversized
 input, delete idempotency, recurring-expense re-generation idempotency).
 
+The soft-delete/restore tools and the live-rate currency lookup are new
+since Round 3 and aren't covered by a documented QA round yet — treat
+them as functional but not yet adversarially tested to the same bar as
+the rest of the server.
+
 ## Known limitations
 
 - DB calls are synchronous `psycopg` calls inside `async def` tool
@@ -205,26 +238,18 @@ input, delete idempotency, recurring-expense re-generation idempotency).
   through Claude Desktop's current chat UI (tools-only support at this
   writing) — verified instead via MCP Inspector.
 - No automated test suite yet — testing so far has been structured manual
-  QA through the live client (see Roadmap).
+  QA through the live client (see Testing above).
 - No true multi-currency rollup — every aggregation tool reports one
   currency at a time by design (see Architecture Notes above), not a
   blended total across currencies.
+- Live currency rates depend on an external API being reachable within
+  3 seconds; on any failure it silently falls back to the static table,
+  which can drift from real market rates over time if left unmaintained.
 - `add_expense` has no duplicate-request protection.
 - Recurring expense templates don't carry a currency field — generated
   rows are always INR.
-
-## Roadmap
-
-- [ ] `pytest` suite against a disposable test database
-- [x] ~~Budget-limit tool~~ — done: `set_budget` / `check_budget_status`
-- [x] ~~Recurring-expense support~~ — done: `add_recurring_expense` /
-      `generate_recurring_expenses`
-- [x] ~~Multi-currency handling~~ — done, currency-scoped (see Known
-      Limitations for what's still not covered)
-- [ ] True multi-currency rollup (convert-and-sum across currencies)
-- [ ] Async DB layer for HTTP-transport deployment
-- [ ] LangGraph agent as a dedicated client on top of this server
-- [ ] Docker Compose for one-command local setup
+- Soft-deleted expenses are never purged — `deleted_at` rows accumulate
+  indefinitely with no retention policy or hard-delete path.
 
 ## License
 
@@ -234,4 +259,4 @@ MIT — see [LICENSE](../LICENSE).
 
 Built by [Deepak Kumar Singh](https://github.com/CodeWithDks) as part of a
 hands-on Generative AI / agentic tooling learning path (LangChain,
-LangGraph, and the MCP ecosystem)..
+LangGraph, and the MCP ecosystem).
