@@ -234,4 +234,4 @@ MIT — see [LICENSE](../LICENSE).
 
 Built by [Deepak Kumar Singh](https://github.com/CodeWithDks) as part of a
 hands-on Generative AI / agentic tooling learning path (LangChain,
-LangGraph, and the MCP ecosystem).
+LangGraph, and the MCP ecosystem)..
