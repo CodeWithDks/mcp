@@ -17,6 +17,7 @@ from datetime import date
 from typing import Annotated, Optional
 
 import dateparser
+import httpx
 
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
@@ -142,19 +143,39 @@ def _validate_date(value: Optional[str], field_name: str) -> None:
         raise ToolError(f"{field_name} must use YYYY-MM-DD format, got {value!r}.")
 
 
-# Static rates relative to 1 INR. Good enough for a personal tracker demo —
-# swap for a live FX API if this ever needs to be accurate day-to-day.
+# Fallback rates, relative to 1 INR, used ONLY when the live rate lookup
+# fails (network error, timeout, unsupported currency pair). Updated
+# 2026-09 against a real market snapshot — still an approximation and will
+# drift over time, which is exactly why it's a fallback and not primary.
 EXCHANGE_RATES_PER_INR = {
     "INR": 1.0,
-    "USD": 0.012,
-    "EUR": 0.011,
-    "GBP": 0.0095,
-    "AED": 0.044,
-    "JPY": 1.78,
+    "USD": 0.01036,
+    "EUR": 0.0095,
+    "GBP": 0.0082,
+    "AED": 0.038,
+    "JPY": 1.58,
 }
+
+FX_API_URL = "https://api.frankfurter.app/latest"
+
+
+async def _get_live_rate(from_currency: str, to_currency: str) -> Optional[float]:
+    """
+    Try a live ECB-reference-rate lookup. Returns None on ANY failure
+    (network error, timeout, unsupported currency pair, bad response) so
+    the caller can fall back to the static table instead of crashing.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            response = await client.get(FX_API_URL, params={"from": from_currency, "to": to_currency})
+            response.raise_for_status()
+            return response.json()["rates"][to_currency]
+    except Exception:
+        return None
 
 
 def _convert_currency(amount: float, from_currency: str, to_currency: str) -> float:
+    """Static-table conversion — the fallback path, not the primary one. See convert_currency tool."""
     from_currency = from_currency.upper()
     to_currency = to_currency.upper()
     if from_currency not in EXCHANGE_RATES_PER_INR:
@@ -786,7 +807,7 @@ async def export_expenses_csv(
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # pyrefly: ignore [arg-type, bad-argument-type]
+                # pyrefly: ignore [bad-argument-type]
                 cursor.execute(query, parameters)
                 rows = cursor.fetchall()
     except Exception as exc:
@@ -806,22 +827,35 @@ async def export_expenses_csv(
     annotations={
         "title": "Convert Currency",
         "readOnlyHint": True,
-        "idempotentHint": True,
-        "openWorldHint": False,
+        "idempotentHint": False,
+        "openWorldHint": True,
     }
 )
 async def convert_currency(amount: Amount, from_currency: Currency, to_currency: Currency, ctx: Context) -> dict:
     """
-    Convert an amount between currencies using a static rate table.
-    Rates are fixed in this server (not live) — good for rough comparisons,
-    not for anything that needs today's real exchange rate.
+    Convert an amount between currencies. Tries a live rate lookup first;
+    if that fails (offline, timeout, unsupported pair), falls back to a
+    static reference table and says so explicitly in the response — never
+    silently returns a stale number as if it were current.
     """
-    converted = _convert_currency(amount, from_currency, to_currency)
+    from_currency = from_currency.upper()
+    to_currency = to_currency.upper()
+
+    live_rate = await _get_live_rate(from_currency, to_currency)
+    if live_rate is not None:
+        converted = round(amount * live_rate, 2)
+        rate_source = "live"
+    else:
+        await ctx.info(f"Live FX rate unavailable for {from_currency}->{to_currency}; using static fallback table.")
+        converted = _convert_currency(amount, from_currency, to_currency)
+        rate_source = "static_fallback"
+
     return {
         "amount": amount,
-        "from_currency": from_currency.upper(),
-        "to_currency": to_currency.upper(),
+        "from_currency": from_currency,
+        "to_currency": to_currency,
         "converted_amount": converted,
+        "rate_source": rate_source,
     }
 
 
@@ -1301,5 +1335,34 @@ Instructions:
 # SERVER
 # ============================================================
 
+REQUIRED_EXPENSE_COLUMNS = {"deleted_at", "currency", "source_recurring_id"}
+
+
+def _verify_schema() -> None:
+    """
+    Fail fast, at startup, if the database is missing columns the code
+    expects — instead of every tool failing individually and confusingly
+    later, the way "column deleted_at does not exist" did in testing.
+    """
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT column_name FROM information_schema.columns WHERE table_name = 'expenses';"
+                )
+                existing_columns = {row[0] for row in cursor.fetchall()}
+    except Exception as exc:
+        raise RuntimeError(f"Could not verify database schema on startup: {exc}") from exc
+
+    missing = REQUIRED_EXPENSE_COLUMNS - existing_columns
+    if missing:
+        raise RuntimeError(
+            f"Database is missing expected column(s) on 'expenses': {sorted(missing)}. "
+            "Run schema.sql (or the relevant migration_*.sql file) before starting the server. "
+            "Refusing to start rather than fail unpredictably on individual tool calls."
+        )
+
+
 if __name__ == "__main__":
+    _verify_schema()
     mcp.run()
