@@ -19,7 +19,7 @@ Click here for the notes: https://heather-aura-1c8.notion.site/MCP-Complete-Begi
 ```
 mcp/
 ├── 01_simple_math/          ✅ Calculator MCP server (FastMCP)
-├── 02_expense_tracker/      ✅ PostgreSQL-backed expense tracker (20 tools)
+├── 02_expense_tracker/      ✅ PostgreSQL-backed expense tracker (22 tools)
 ├── 03_github_mcp/           ✅ GitHub MCP server (30 tools)
 ├── pyproject.toml
 ├── pyrightconfig.json
@@ -48,7 +48,7 @@ A calculator MCP server built with [FastMCP](https://gofastmcp.com/), demonstrat
 A PostgreSQL-backed personal finance assistant — full CRUD on expenses,
 search/filter, monthly and category analytics, budgets, recurring
 expenses, multi-currency support, natural-language dates, and statistical
-anomaly detection. 20 tools, 5 resources, 2 prompts, with a documented
+anomaly detection. 22 tools, 5 resources, 2 prompts, with a documented
 three-round QA pass (90+ manually-run scenarios).
 
 📄 [Read the module README](./02_expense_tracker/README.md) · [Testing notes](./02_expense_tracker/TESTING.md)
