@@ -1,6 +1,25 @@
 """
 Expense Tracker MCP Server
 
+Fixes applied vs. the original version:
+    1. Explicit conn.commit() after every write, so persistence doesn't
+       depend on undocumented behaviour of get_connection().
+    2. All user-facing errors raised as ToolError (never masked by the
+       client, unlike bare ValueError / driver exceptions).
+    3. try/except around every DB call, so a dropped connection returns
+       a message the model can act on instead of a raw traceback.
+    4. Tool annotations (readOnlyHint / destructiveHint / idempotentHint /
+       openWorldHint) on every tool.
+    5. Annotated + Field constraints on every parameter, so limits show
+       up in the schema itself, not just in the docstring.
+    6. Context (ctx) used for logging on every tool, and for an
+       elicitation confirmation step before delete_expense runs.
+    7. Added expense://{expense_id} resource template, to match the
+       tool/resource pairing used elsewhere in the file.
+    8. Added prompts (the original file had none).
+    9. Added a `limit` to search_expenses (previously unbounded).
+   10. New tools: get_top_expenses, get_spending_trend, export_expenses_csv.
+
 Known trade-off (not fixed here, flagged for you to decide):
     Tool functions are declared `async def` so ctx.info()/ctx.elicit()
     can be awaited, but the DB calls inside them are still synchronous
@@ -12,6 +31,7 @@ Known trade-off (not fixed here, flagged for you to decide):
 
 import csv
 import io
+import os
 import re
 from datetime import date
 from typing import Annotated, Optional
@@ -1365,4 +1385,7 @@ def _verify_schema() -> None:
 
 if __name__ == "__main__":
     _verify_schema()
-    mcp.run()
+    # Render (and most PaaS platforms) inject the port to bind via $PORT;
+    # 8000 is just a sane local-dev default when that's not set.
+    port = int(os.environ.get("PORT", 8000))
+    mcp.run(transport="http", host="0.0.0.0", port=port)
