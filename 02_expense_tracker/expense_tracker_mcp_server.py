@@ -50,6 +50,13 @@ from database import get_connection
 mcp = FastMCP("Expense Tracker MCP")
 
 
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request):
+    """Plain health check for Render's health monitoring — not part of the MCP protocol itself."""
+    from starlette.responses import PlainTextResponse
+    return PlainTextResponse("OK")
+
+
 # ============================================================
 # Shared parameter types (constraints live in the schema, not
 # just in code, so the model can see them before calling)
