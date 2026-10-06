@@ -1,25 +1,6 @@
 """
 Expense Tracker MCP Server
 
-Fixes applied vs. the original version:
-    1. Explicit conn.commit() after every write, so persistence doesn't
-       depend on undocumented behaviour of get_connection().
-    2. All user-facing errors raised as ToolError (never masked by the
-       client, unlike bare ValueError / driver exceptions).
-    3. try/except around every DB call, so a dropped connection returns
-       a message the model can act on instead of a raw traceback.
-    4. Tool annotations (readOnlyHint / destructiveHint / idempotentHint /
-       openWorldHint) on every tool.
-    5. Annotated + Field constraints on every parameter, so limits show
-       up in the schema itself, not just in the docstring.
-    6. Context (ctx) used for logging on every tool, and for an
-       elicitation confirmation step before delete_expense runs.
-    7. Added expense://{expense_id} resource template, to match the
-       tool/resource pairing used elsewhere in the file.
-    8. Added prompts (the original file had none).
-    9. Added a `limit` to search_expenses (previously unbounded).
-   10. New tools: get_top_expenses, get_spending_trend, export_expenses_csv.
-
 Known trade-off (not fixed here, flagged for you to decide):
     Tool functions are declared `async def` so ctx.info()/ctx.elicit()
     can be awaited, but the DB calls inside them are still synchronous
@@ -55,6 +36,35 @@ async def health_check(request):
     """Plain health check for Render's health monitoring — not part of the MCP protocol itself."""
     from starlette.responses import PlainTextResponse
     return PlainTextResponse("OK")
+
+
+@mcp.tool(
+    annotations={
+        "title": "Who Am I (temporary diagnostic — remove before real use)",
+        "readOnlyHint": True,
+        "idempotentHint": True,
+        "openWorldHint": False,
+    }
+)
+async def whoami() -> dict:
+    """
+    TEMPORARY diagnostic tool. Shows exactly what identity information
+    (if any) the server can see about the currently authenticated caller.
+    Delete this tool once we've confirmed what Horizon's OAuth exposes —
+    it's not meant to ship in the real multi-user version.
+    """
+    from fastmcp.server.dependencies import get_access_token
+
+    token = get_access_token()
+    if token is None:
+        return {"authenticated": False, "note": "No access token present on this request."}
+
+    return {
+        "authenticated": True,
+        "client_id": token.client_id,
+        "scopes": token.scopes,
+        "claims": token.claims,
+    }
 
 
 # ============================================================
