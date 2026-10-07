@@ -8,21 +8,34 @@ Built with [FastMCP](https://gofastmcp.com), backed by PostgreSQL, and
 tested through real usage in Claude Desktop rather than left as an
 unverified script.
 
+## Live
+
+Deployed on [Prefect Horizon](https://horizon.prefect.io) (FastMCP's own
+hosting platform), backed by [Neon](https://neon.tech) Postgres:
+
+```
+https://expense-tracker-mcp09.fastmcp.app/mcp
+```
+
+Add it in Claude Desktop/Claude.ai as a custom connector. Authentication
+is required (GitHub OAuth via Horizon) — this is currently **single-tenant**:
+everyone who authenticates shares the same underlying data, there is no
+per-user isolation yet. That's active work, not an oversight — see
+[Known Limitations](#known-limitations).
+
 ## Why this exists
 
 Most MCP demo servers stop at "here's a tool that adds a row." This one
 tries to go further: proper input validation with schema-level constraints,
 graceful error handling instead of raw stack traces reaching the model,
-a destructive-action confirmation flow, and a documented QA pass that
-actually found and fixed several real bugs. See [TESTING.md](./TESTING.md)
-for the full writeup.
+a destructive-action confirmation flow, and a documented multi-round QA
+pass that found and fixed real bugs — including a hard-to-catch cross-
+currency aggregation issue and a stale-exchange-rate problem. See
+[TESTING.md](./TESTING.md) for the full writeup.
 
 ## Features
 
 - **Full CRUD** on expenses — add, get, update, delete
-- **Soft deletes with undo** — a deleted expense is hidden from all
-  normal reads immediately, but recoverable via `restore_expense` — see
-  [Architecture Notes](#architecture-notes)
 - **Search & filter** by category, payment method, and date range
 - **Analytics** — monthly totals, category breakdown, top expenses,
   a zero-filled month-over-month spending trend, statistical anomaly
@@ -30,10 +43,10 @@ for the full writeup.
 - **Budgets** — set a monthly limit per category, check spend against it
 - **Recurring expenses** — templates for rent/subscriptions/etc., safely
   re-runnable materialization into real expense rows (no duplicates)
-- **Multi-currency** — per-expense currency, live exchange-rate lookup
-  with an automatic static-table fallback, and currency-scoped
-  aggregation (every summary tool reports one currency at a time rather
-  than silently mixing units — see [Architecture Notes](#architecture-notes))
+- **Multi-currency** — per-expense currency, live-rate conversion with a
+  static fallback if the lookup fails, and currency-scoped aggregation
+  (every summary tool reports one currency at a time rather than silently
+  mixing units — see [Architecture Notes](#architecture-notes))
 - **Natural-language dates** — `"yesterday"`, `"last Tuesday"`, `"3 days ago"`,
   as well as strict `YYYY-MM-DD`
 - **CSV export** for bulk data (cheaper on tokens than JSON for large
@@ -54,15 +67,15 @@ for the full writeup.
 | `list_expenses` | read | Most recent expenses, newest first |
 | `search_expenses` | read | Filter by category / payment method / date range |
 | `update_expense` | write | Partial update — only provided fields change |
-| `delete_expense` | write, destructive | Soft-delete by ID, with confirmation |
-| `restore_expense` | write | Undo a delete — bring a soft-deleted expense back |
-| `list_deleted_expenses` | read | List soft-deleted expenses that can still be restored |
+| `delete_expense` | write, destructive | Soft-delete by ID, with confirmation (recoverable) |
 | `get_monthly_summary` | read | Total spent + count for a given month, one currency |
 | `get_category_summary` | read | Totals grouped by category, one currency, highest first |
 | `get_top_expenses` | read | Largest N expenses, optional category filter |
 | `get_spending_trend` | read | Month-over-month totals, one currency (zero-filled) |
 | `export_expenses_csv` | read | Bulk export as CSV text |
-| `convert_currency` | read | Convert an amount between currencies — live rate, static-table fallback |
+| `convert_currency` | read | Convert between currencies — live rate lookup, static fallback |
+| `restore_expense` | write | Undo a soft delete |
+| `list_deleted_expenses` | read | List soft-deleted expenses that can still be restored |
 | `set_budget` | write | Set/update a category's monthly budget (INR) |
 | `get_budgets` | read | List all configured budgets |
 | `check_budget_status` | read | Spend vs. budget per category for a month |
@@ -76,36 +89,20 @@ for the full writeup.
 
 ```mermaid
 flowchart LR
-    A[Claude Desktop / Claude Code] -- MCP over stdio --> B[Expense Tracker MCP Server]
-    B -- psycopg3 --> C[(PostgreSQL)]
-    B -- httpx (3s timeout) --> D[Live FX rate API]
-    B -- ctx.elicit / ctx.info --> A
+    A[Claude Desktop / Claude.ai] -- MCP over Streamable HTTP + OAuth --> B[Prefect Horizon]
+    B --> C[Expense Tracker MCP Server]
+    C -- psycopg3 --> D[(Neon Postgres)]
+    C -- ctx.elicit / ctx.info --> A
 ```
+
+The server also runs locally over stdio (see Setup below) — the same
+codebase supports both transports; only the entrypoint differs.
 
 The server exposes 22 tools, 5 resources, and 2 prompts on top of the
 `expenses`, `budgets`, and `recurring_expenses` tables (schema in
 [`schema.sql`](./schema.sql)).
 
 ## Architecture notes
-
-**Why deletes are soft, not hard.** `delete_expense` sets a `deleted_at`
-timestamp rather than removing the row — every normal read (`list_expenses`,
-`search_expenses`, all the aggregation tools) filters `WHERE deleted_at IS
-NULL`, so a deleted expense disappears from everyday use immediately, but
-nothing is actually destroyed. `restore_expense` clears the timestamp to
-undo it, and `list_deleted_expenses` shows what's currently recoverable.
-A partial index (`WHERE deleted_at IS NULL`) keeps the common case — reads
-that exclude deleted rows — fast, since Postgres only has to index the
-rows that matter for everyday queries.
-
-**Why currency conversion tries live rates first, not just the static
-table.** `convert_currency` attempts a live lookup via `httpx` (a 3-second
-timeout) before falling back to the static exchange-rate table. The fallback
-triggers on *any* failure — network error, timeout, unsupported pair, bad
-response — so a flaky or unreachable rate API degrades the tool to "less
-precise" rather than "broken." The static table remains the sole source of
-truth everywhere else (aggregation, budget checks) — see the currency
-partitioning note below.
 
 **Why `confirm=true` exists alongside elicitation.** MCP defines
 elicitation (the server asking the client to show a confirmation dialog) as
@@ -136,6 +133,22 @@ something faked here. `check_budget_status` follows the same principle:
 budgets are INR-only, so it explicitly filters spend to INR rather than
 quietly including foreign-currency expenses in a category's budget check.
 
+**Why `database.py` checks `DATABASE_URL` at connection time, not import
+time.** Prefect Horizon's build pipeline statically imports the server
+module to inspect its tools, before any runtime environment variables are
+injected. An import-time `if not DATABASE_URL: raise` (the original
+version of this file) fails that build step even though the real
+deployment has `DATABASE_URL` set correctly — the check was just running
+at the wrong moment. Deferred into `get_connection()`, it only fires when
+something actually tries to open a connection, which is also just more
+correct in general: a module shouldn't fail to import because of
+configuration it doesn't need yet.
+
+**Why there's a `/health` route defined manually.** FastMCP's Python
+server doesn't expose one by default (unlike the separate TypeScript
+`fastmcp` project, easy to conflate) — added via `@mcp.custom_route` for
+platform health checks, deliberately outside the MCP protocol itself.
+
 ## Setup
 
 ### 1. Database
@@ -147,68 +160,56 @@ psql -d expense_tracker -f schema.sql
 
 ### 2. Environment
 
-Copy the example file and fill in your own database connection string:
-
 ```bash
 cp .env_example .env
+# then edit .env with your real DATABASE_URL
 ```
-
-`.env` should contain:
-
-```
-DATABASE_URL=postgresql://username:password@localhost:5432/expense_tracker
-```
-
-`.env` is git-ignored — never commit real credentials.
 
 ### 3. Install & run
 
-This project uses [`uv`](https://docs.astral.sh/uv/) for dependency
-management:
-
 ```bash
-uv sync
-uv run expense_tracker_mcp_server.py
+pip install -r requirements.txt
+python expense_tracker_mcp_server.py
 ```
 
-*(No `uv`? A plain `pip install -r requirements.txt` followed by
-`python expense_tracker_mcp_server.py` works too — `uv` just handles the
-virtual environment and lockfile for you.)*
+### 4. Connect it to Claude Desktop
 
-### 4. Connect it to an MCP client
-
-**Claude Desktop** — add to your `claude_desktop_config.json`:
+Add to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "expense-tracker": {
-      "command": "uv",
-      "args": [
-        "--directory",
-        "/absolute/path/to/02_expense_tracker",
-        "run",
-        "expense_tracker_mcp_server.py"
-      ]
+      "command": "python",
+      "args": ["/absolute/path/to/expense_tracker_mcp_server.py"]
     }
   }
 }
 ```
 
-Replace `/absolute/path/to/02_expense_tracker` with this folder's actual
-path on your machine, then restart Claude Desktop. The tools will be
-available in a new conversation. See [`mcp.json`](./mcp.json) for the
-same configuration as a standalone file.
+Restart Claude Desktop and the tools will be available in a new
+conversation.
+
+### 5. (Optional) Deploy it instead of running locally
+
+This repo also runs as-is on [Prefect Horizon](https://horizon.prefect.io):
+connect your GitHub repo, point the entrypoint at
+`expense_tracker_mcp_server.py:mcp`, and set `DATABASE_URL` as an
+environment variable in Horizon's project settings (a
+[Neon](https://neon.tech) connection string works well — free tier, no
+expiry, unlike some alternatives). Horizon ignores the `if __name__ ==
+"__main__":` block entirely and manages transport/host/port itself, so
+local stdio and remote HTTP both work from the same file without a
+platform-specific branch in the code.
 
 ## Tech stack
 
 - **[FastMCP](https://gofastmcp.com)** — Python MCP server framework
 - **PostgreSQL** + **psycopg3** — data layer
-- **httpx** — async live exchange-rate lookups, with a strict timeout
-- **dateparser** — natural-language date parsing (`"yesterday"`, `"last Tuesday"`)
 - **Pydantic** — schema validation (`Annotated` + `Field` constraints on
   every tool parameter)
 - **Model Context Protocol** — tools, resources, prompts, elicitation
+- **[Prefect Horizon](https://horizon.prefect.io)** + **[Neon](https://neon.tech)** — live deployment (GitHub-connected build, GitHub OAuth, managed Postgres)
 
 ## Testing
 
@@ -220,17 +221,25 @@ aggregation silently mixing units, and a missing CSV column — plus
 adversarial checks (SQL injection attempt, malformed dates, oversized
 input, delete idempotency, recurring-expense re-generation idempotency).
 
-The soft-delete/restore tools and the live-rate currency lookup are new
-since Round 3 and aren't covered by a documented QA round yet — treat
-them as functional but not yet adversarially tested to the same bar as
-the rest of the server.
-
 ## Known limitations
 
+- **Single-tenant: no per-user data isolation yet.** Everyone who
+  authenticates through the live deployment reads and writes the same
+  underlying rows — there's no `user_id` anywhere in the schema. Horizon's
+  OAuth identifies *who* is calling (confirmed via `get_access_token()`
+  and its token claims), but nothing in the application layer uses that
+  identity to scope data yet. This is the active next piece of work, not
+  an oversight.
 - DB calls are synchronous `psycopg` calls inside `async def` tool
-  functions — fine for stdio / single-user use, but under real concurrent
+  functions — fine for the current scale, but under real concurrent
   HTTP traffic they'd block the event loop. `asyncpg` or a thread pool
-  would be the next step if this ever needs to scale.
+  would be the next step if this ever needs to handle many simultaneous
+  users.
+- The startup schema-verification check (`_verify_schema()`) only runs
+  under the `if __name__ == "__main__":` entrypoint — Horizon ignores
+  that block entirely, so this safety net is currently silent on the
+  platform this is actually deployed to. Still useful for local/other
+  deployments; not yet solved for Horizon specifically.
 - `amount` is stored as `NUMERIC` in Postgres but surfaced as Python
   `float` in tool responses — acceptable for a personal tracker, not
   something I'd ship for a system doing real accounting.
@@ -238,25 +247,19 @@ the rest of the server.
   through Claude Desktop's current chat UI (tools-only support at this
   writing) — verified instead via MCP Inspector.
 - No automated test suite yet — testing so far has been structured manual
-  QA through the live client (see Testing above).
+  QA through the live client.
 - No true multi-currency rollup — every aggregation tool reports one
   currency at a time by design (see Architecture Notes above), not a
   blended total across currencies.
-- Live currency rates depend on an external API being reachable within
-  3 seconds; on any failure it silently falls back to the static table,
-  which can drift from real market rates over time if left unmaintained.
 - `add_expense` has no duplicate-request protection.
 - Recurring expense templates don't carry a currency field — generated
   rows are always INR.
-- Soft-deleted expenses are never purged — `deleted_at` rows accumulate
-  indefinitely with no retention policy or hard-delete path.
 
 ## License
 
-MIT — see [LICENSE](../LICENSE).
+MIT — see [LICENSE](./LICENSE).
 
 ## Author
 
-Built by [Deepak Kumar Singh](https://github.com/CodeWithDks) as part of a
-hands-on Generative AI / agentic tooling learning path (LangChain,
-LangGraph, and the MCP ecosystem).
+Built by Radhe as a portfolio project while learning Generative AI /
+agentic tooling development (LangChain, LangGraph, and the MCP ecosystem).
