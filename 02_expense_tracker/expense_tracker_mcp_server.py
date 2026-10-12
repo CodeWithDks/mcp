@@ -492,7 +492,7 @@ async def update_expense(
     query = f"""
         UPDATE expenses
         SET {", ".join(fields)}
-        WHERE id = %s
+        WHERE id = %s AND deleted_at IS NULL
         RETURNING {EXPENSE_COLUMNS};
     """
 
@@ -738,10 +738,16 @@ async def get_top_expenses(
     ctx: Context,
     limit: Annotated[int, Field(ge=1, le=50)] = 5,
     category: Optional[Category] = None,
+    currency: Currency = "INR",
 ) -> list[dict]:
-    """Return the largest N expenses by amount, optionally filtered by category."""
+    """Return the largest N expenses by amount within a single currency (default INR), optionally filtered by category."""
     conditions = ["deleted_at IS NULL"]
     parameters: list = []
+    
+    # Currency must come first so it aligns with the first %s placeholder
+    conditions.append("currency = %s")
+    parameters.append(currency.upper())
+
     if category:
         conditions.append("LOWER(category) = LOWER(%s)")
         parameters.append(category.strip())
@@ -1271,7 +1277,7 @@ def single_expense_resource(expense_id: int) -> dict:
 
 @mcp.resource("expense://summary/monthly/{year}/{month}", mime_type="application/json")
 def monthly_summary_resource(year: int, month: int) -> dict:
-    """Read-only monthly expense summary."""
+    """Read-only monthly expense summary. (INR only)"""
     if month < 1 or month > 12:
         return {"error": "month must be between 1 and 12."}
     with get_connection() as conn:
@@ -1282,13 +1288,20 @@ def monthly_summary_resource(year: int, month: int) -> dict:
                 FROM expenses
                 WHERE EXTRACT(YEAR FROM expense_date) = %s
                   AND EXTRACT(MONTH FROM expense_date) = %s
-                  AND deleted_at IS NULL;
+                  AND deleted_at IS NULL
+                  AND currency = 'INR';
                 """,
                 (year, month),
             )
             # pyrefly: ignore [not-iterable]
             total, count = cursor.fetchone()
-    return {"year": year, "month": month, "total_spent": float(total), "expense_count": count}
+    return {
+        "year": year, 
+        "month": month, 
+        "total_spent": float(total), 
+        "expense_count": count,
+        "currency": "INR"
+    }
 
 
 @mcp.resource("expense://summary/categories", mime_type="application/json")
@@ -1297,10 +1310,10 @@ def category_summary_resource() -> list[dict]:
     with get_connection() as conn:
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT category, SUM(amount), COUNT(*) FROM expenses WHERE deleted_at IS NULL GROUP BY category ORDER BY SUM(amount) DESC;"
+                "SELECT category, SUM(amount), COUNT(*) FROM expenses WHERE deleted_at IS NULL AND currency = 'INR' GROUP BY category ORDER BY SUM(amount) DESC;"
             )
             rows = cursor.fetchall()
-    return [{"category": r[0], "total_spent": float(r[1]), "expense_count": r[2]} for r in rows]
+    return [{"category": r[0], "total_spent": float(r[1]), "currency": "INR", "expense_count": r[2]} for r in rows]
 
 
 @mcp.resource("expense://stats", mime_type="application/json")
@@ -1317,7 +1330,7 @@ def expense_stats_resource() -> dict:
                     COALESCE(MIN(amount), 0),
                     COALESCE(MAX(amount), 0)
                 FROM expenses
-                WHERE deleted_at IS NULL;
+                WHERE deleted_at IS NULL AND currency = 'INR';
                 """
             )
             # pyrefly: ignore [not-iterable]
@@ -1328,6 +1341,7 @@ def expense_stats_resource() -> dict:
         "average_expense": float(average),
         "minimum_expense": float(minimum),
         "maximum_expense": float(maximum),
+        "currency": "INR"
     }
 
 
