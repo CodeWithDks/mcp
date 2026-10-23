@@ -57,7 +57,7 @@ def create_issue(params: CreateIssueInput) -> dict:
         )
     except Exception as e:
         return {"error": handle_api_error(e, "create_issue")}
-    # pyrefly: ignore [bad-argument-type]
+
     return simplify_issue(issue)
 
 
@@ -89,7 +89,6 @@ def create_branch(params: CreateBranchInput) -> dict:
 
     return {
         "ref": result["ref"],
-        # pyrefly: ignore [bad-string-format]
         "sha": result["object"]["sha"],
         "url": result["url"],
     }
